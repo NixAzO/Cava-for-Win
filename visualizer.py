@@ -1,12 +1,12 @@
 import sys
 import json
 import numpy as np
-import pyaudio
+import sounddevice as sd
 from pathlib import Path
 from PyQt5.QtWidgets import (QApplication, QWidget, QSystemTrayIcon, QMenu, 
                              QAction, QDialog, QVBoxLayout, QLabel, QSlider, 
                              QComboBox, QPushButton, QCheckBox, QMessageBox)
-from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QSettings
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QPainter, QColor, QLinearGradient, QIcon, QPixmap
 
 APP_NAME = "AudioVisualizer"
@@ -19,7 +19,7 @@ def get_config_path():
 
 DEFAULT_CONFIG = {
     "bars": 16,
-    "sensitivity": 100,
+    "sensitivity": 150,
     "smoothing": 0.7,
     "gradient": ["#59cc33", "#cccc33", "#cc3333"],
     "bar_width": 3,
@@ -52,10 +52,7 @@ def set_autostart(enable):
                             r"Software\Microsoft\Windows\CurrentVersion\Run", 
                             0, winreg.KEY_SET_VALUE)
         if enable:
-            if getattr(sys, 'frozen', False):
-                path = sys.executable
-            else:
-                path = f'"{sys.executable}" "{__file__}"'
+            path = f'"{sys.executable}" "{__file__}"' if not getattr(sys, 'frozen', False) else sys.executable
             winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, path)
         else:
             try:
@@ -108,36 +105,23 @@ class AudioCapture(QThread):
         self.running = True
         
     def run(self):
-        p = pyaudio.PyAudio()
         chunk = 1024
-        rate = 44100
+        device = self.config.get("device_index")
         
-        device_idx = self.config.get("device_index")
-        if device_idx is None:
-            for i in range(p.get_device_count()):
-                info = p.get_device_info_by_index(i)
-                name = info["name"].lower()
-                if ("loopback" in name or "stereo mix" in name or 
-                    "what u hear" in name or "wave out" in name):
-                    device_idx = i
-                    break
-            if device_idx is None:
-                device_idx = p.get_default_input_device_info()["index"]
+        def callback(indata, frames, time, status):
+            if self.running:
+                data = indata[:, 0]
+                fft = np.abs(np.fft.rfft(data))[:self.config["bars"]]
+                fft = fft / (chunk / 2) * self.config["sensitivity"]
+                self.data_ready.emit(fft)
         
         try:
-            stream = p.open(format=pyaudio.paInt16, channels=1, rate=rate,
-                           input=True, frames_per_buffer=chunk,
-                           input_device_index=device_idx)
-            while self.running:
-                data = np.frombuffer(stream.read(chunk, exception_on_overflow=False), dtype=np.int16)
-                fft = np.abs(np.fft.rfft(data))[:self.config["bars"]]
-                fft = fft / (32768 * chunk / 2) * self.config["sensitivity"]
-                self.data_ready.emit(fft)
-            stream.stop_stream()
-            stream.close()
+            with sd.InputStream(device=device, channels=1, callback=callback,
+                              blocksize=chunk, samplerate=44100):
+                while self.running:
+                    sd.sleep(100)
         except Exception as e:
             print(f"Audio error: {e}")
-        p.terminate()
     
     def stop(self):
         self.running = False
@@ -258,13 +242,10 @@ class SettingsDialog(QDialog):
         self.accept()
 
 def get_audio_devices():
-    p = pyaudio.PyAudio()
     devices = []
-    for i in range(p.get_device_count()):
-        info = p.get_device_info_by_index(i)
-        if info["maxInputChannels"] > 0:
-            devices.append((i, info["name"]))
-    p.terminate()
+    for i, d in enumerate(sd.query_devices()):
+        if d['max_input_channels'] > 0:
+            devices.append((i, d['name']))
     return devices
 
 class App:
@@ -330,8 +311,8 @@ class App:
     def show_about(self):
         QMessageBox.about(None, f"About {APP_NAME}",
             f"{APP_NAME} v{APP_VERSION}\n\n"
-            "A simple audio visualizer for Windows taskbar.\n\n"
-            "https://github.com/yourusername/audio-visualizer")
+            "Audio visualizer for Windows taskbar.\n\n"
+            "github.com/yourusername/audio-visualizer")
     
     def quit(self):
         if self.audio:
