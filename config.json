@@ -1,0 +1,11 @@
+{
+  "bars": 16,
+  "framerate": 60,
+  "sensitivity": 100,
+  "smoothing": 0.7,
+  "gradient": ["#59cc33", "#cccc33", "#cc3333"],
+  "bar_width": 3,
+  "bar_spacing": 1,
+  "height": 30,
+  "device_index": null
+}
